@@ -1,5 +1,11 @@
 const fs = require("fs");
 const path = require("path");
+const { analyzeSOP, analyzePHS } = require("../utils/openaiService");
+const PDFParser = require("pdf-parse");
+const mammoth = require("mammoth");
+const textract = require("textract");
+const util = require("util");
+const textractAsync = util.promisify(textract.fromFileWithPath);
 
 // Mock database for documents
 // In a real application, this would use a database
@@ -107,7 +113,7 @@ exports.createDocument = (req, res) => {
 exports.saveEdits = (req, res) => {
   try {
     const documentId = req.params.id;
-    const { edits, mentorName, mentorId } = req.body;
+    const { edits, mentorName, mentorId, mentorTags = [] } = req.body;
 
     if (!edits || !Array.isArray(edits)) {
       return res.status(400).json({
@@ -133,6 +139,7 @@ exports.saveEdits = (req, res) => {
       originalText: edit.originalText || "",
       mentorName: mentorName || "Anonymous Mentor",
       mentorId: mentorId || "unknown",
+      mentorTags: mentorTags || [], // Add mentor tags for tracking
       timestamp: new Date().toISOString(),
     }));
 
@@ -140,6 +147,15 @@ exports.saveEdits = (req, res) => {
     documents[documentIndex].mentorEdits = [
       ...documents[documentIndex].mentorEdits,
       ...formattedEdits,
+    ];
+
+    // Also add to the comprehensive edit history
+    documents[documentIndex].editHistory = [
+      ...(documents[documentIndex].editHistory || []),
+      ...formattedEdits.map((edit) => ({
+        ...edit,
+        editType: "direct",
+      })),
     ];
 
     // Update the document content with the edits
@@ -265,7 +281,16 @@ exports.submitFeedback = (req, res) => {
     documents[documentIndex].updatedAt = new Date().toISOString();
     documents[documentIndex].feedbackComments = feedbackComments || "";
 
+    // Check if there's an edited file attached to this document
+    const hasEditedFile = !!documents[documentIndex].editedFileUrl;
+
     // In a real app, you would trigger notifications to the student here
+    // Example: sending an email notification with links to download the edited file
+    console.log(`Feedback submitted for document ${documentId}.`);
+    console.log(`Edited file available: ${hasEditedFile ? "Yes" : "No"}`);
+    if (hasEditedFile) {
+      console.log(`Edited file URL: ${documents[documentIndex].editedFileUrl}`);
+    }
 
     res.status(200).json({
       success: true,
@@ -273,6 +298,8 @@ exports.submitFeedback = (req, res) => {
       data: {
         documentId,
         status: "completed",
+        hasEditedFile,
+        editedFileUrl: documents[documentIndex].editedFileUrl || null,
       },
     });
   } catch (error) {
@@ -286,7 +313,7 @@ exports.submitFeedback = (req, res) => {
 };
 
 // Process document submission from student
-exports.processStudentSubmission = (req, res) => {
+exports.processStudentSubmission = async (req, res) => {
   try {
     const {
       documentId,
@@ -329,47 +356,68 @@ exports.processStudentSubmission = (req, res) => {
         documentDisplayType = documentType;
     }
 
-    // Create sample content based on document type
-    let documentContent;
-    if (documentType === "cv") {
-      documentContent = `# ${documentName}
-## ${studentName}
+    // Extract the filename from the fileUrl
+    const filename = fileUrl.split("/").pop();
+    const filePath = path.join(__dirname, "../uploads", filename);
 
-### Education
-- PhD Candidate in Computer Science, Stanford University (Expected: 2024)
-- MS in Computer Science, University of California, Berkeley (2020)
-- BS in Computer Science, Massachusetts Institute of Technology (2018)
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      console.warn(`File not found at path: ${filePath}`);
+    }
 
-### Research Experience
-- Research Assistant, Stanford AI Lab (2020-Present)
-- Research Intern, Google Research (Summer 2019)
-- Undergraduate Research Assistant, MIT CSAIL (2017-2018)
+    // Extract content for preview purposes
+    let documentContent = "";
 
-### Publications
-- "Deep Learning Applications in Natural Language Processing", ACM Conference on AI, 2022
-- "Neural Networks for Computer Vision", IEEE Conference on Computer Vision, 2021
+    try {
+      // Get the file extension to determine how to extract content
+      const fileExtension = path.extname(filename).toLowerCase();
 
-### Skills
-- Programming: Python, TensorFlow, PyTorch, Java, C++
-- Tools: Git, Docker, AWS, Linux
-- Languages: English (Native), Mandarin (Fluent)`;
-    } else if (documentType === "sop") {
-      documentContent = `# Statement of Purpose for ${
-        targetProgram || "PhD Program"
+      if (fileExtension === ".pdf") {
+        // Extract content from PDF
+        const dataBuffer = fs.readFileSync(filePath);
+        const pdfData = await PDFParser(dataBuffer);
+        documentContent = pdfData.text;
+      } else if (fileExtension === ".docx") {
+        // Extract content from DOCX
+        const result = await mammoth.extractRawText({
+          path: filePath,
+        });
+        documentContent = result.value;
+      } else if (fileExtension === ".doc") {
+        // Extract content from DOC
+        documentContent = await textractAsync(filePath, {
+          preserveLineBreaks: true,
+        });
+      } else if (fileExtension === ".tex") {
+        // Extract content from TEX
+        documentContent = await textractAsync(filePath, {
+          preserveLineBreaks: true,
+        });
+      } else {
+        // Fallback for other formats
+        try {
+          documentContent = await textractAsync(filePath, {
+            preserveLineBreaks: true,
+          });
+        } catch (e) {
+          console.warn(
+            `Failed to extract content using textract: ${e.message}`
+          );
+          // Read as text file as last resort
+          documentContent = fs.readFileSync(filePath, "utf8");
+        }
       }
-## ${studentName}
+    } catch (extractionError) {
+      console.error(
+        `Error extracting content from file ${filename}:`,
+        extractionError
+      );
+      documentContent = `[Unable to extract content from ${filename}. The file may be corrupted or in an unsupported format.]`;
+    }
 
-When I first encountered machine learning algorithms in my undergraduate studies, I was immediately captivated by their potential to solve complex problems. This fascination led me to pursue research opportunities that combined theoretical foundations with practical applications. During my time at MIT's Computer Science and Artificial Intelligence Laboratory, I worked on developing novel neural network architectures for natural language understanding.
-
-My research interests lie at the intersection of machine learning and natural language processing. Specifically, I am interested in developing models that can understand and generate human language with greater accuracy and efficiency. My previous work has focused on improving transformer-based models for various NLP tasks such as machine translation, summarization, and question answering.
-
-I am applying to ${
-        targetUniversity || "your university"
-      } because of the exceptional research being conducted by faculty members in the NLP group. I am particularly interested in working with Professor Smith, whose work on efficient language models has greatly influenced my own research direction. The collaborative environment and resources available at ${
-        targetUniversity || "your university"
-      } would provide an ideal setting for me to grow as a researcher and make meaningful contributions to the field.`;
-    } else {
-      documentContent = `This is the content of the ${documentName} document submitted by ${studentName}.`;
+    // If we couldn't extract any content, provide a fallback message
+    if (!documentContent || documentContent.trim().length === 0) {
+      documentContent = `[This is a ${documentDisplayType} document submitted by ${studentName}. The content could not be extracted for preview.]`;
     }
 
     // Create a new document from the student submission with appropriate fields for mentor review
@@ -383,8 +431,11 @@ I am applying to ${
       targetProgram,
       targetUniversity,
       fileUrl,
+      originalFilePath: filePath, // Store reference to original file
+      originalFileName: filename, // Store original filename
       suggestions: [], // Will be populated by AI analysis in a real implementation
       mentorEdits: [],
+      editHistory: [], // To track complete edit history with mentor attribution
       status: "pending", // New status - ready for mentor review
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -473,6 +524,13 @@ exports.getStudentFeedbackNotifications = (req, res) => {
           ? doc.mentorEdits[doc.mentorEdits.length - 1]
           : null;
 
+      // Find the last file edit
+      const fileEdits = doc.editHistory
+        ? doc.editHistory.filter((edit) => edit.editType === "file")
+        : [];
+      const lastFileEdit =
+        fileEdits.length > 0 ? fileEdits[fileEdits.length - 1] : null;
+
       return {
         id: `notification-${doc.id}`,
         documentId: doc.id,
@@ -483,8 +541,11 @@ exports.getStudentFeedbackNotifications = (req, res) => {
           .length,
         commentsAdded: doc.mentorEdits.filter((edit) => !edit.fromSuggestion)
           .length,
+        fileEdited: !!lastFileEdit,
         isRead: false,
-        fileUrl: doc.fileUrl,
+        fileUrl: doc.fileUrl, // Original file URL
+        editedFileUrl: doc.editedFileUrl, // The edited file URL to send back to student
+        hasEditedFile: !!doc.editedFileUrl,
         feedbackComments: doc.feedbackComments,
       };
     });
@@ -498,6 +559,260 @@ exports.getStudentFeedbackNotifications = (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to retrieve feedback notifications",
+      error: error.message,
+    });
+  }
+};
+
+// Common document processing function
+const processDocument = async (req, res, analyzeFunction, documentType) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "No file uploaded",
+      });
+    }
+
+    // Get file details
+    const fileDetails = {
+      filename: req.file.filename,
+      originalname: req.file.originalname,
+      path: req.file.path,
+      size: req.file.size,
+      mimetype: req.file.mimetype,
+    };
+
+    // Extract text content from the file for AI analysis
+    let fileContent = "";
+
+    try {
+      // For PDF files
+      if (req.file.mimetype === "application/pdf") {
+        const dataBuffer = fs.readFileSync(req.file.path);
+        const data = await PDFParser(dataBuffer);
+        fileContent = data.text;
+      }
+      // For DOCX files
+      else if (
+        req.file.mimetype ===
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      ) {
+        const result = await mammoth.extractRawText({
+          path: req.file.path,
+        });
+        fileContent = result.value;
+      }
+      // For DOC files
+      else if (req.file.mimetype === "application/msword") {
+        fileContent = await textractAsync(req.file.path, {
+          preserveLineBreaks: true,
+        });
+      }
+      // For TEX files
+      else if (
+        req.file.mimetype === "application/x-tex" ||
+        path.extname(req.file.originalname).toLowerCase() === ".tex"
+      ) {
+        fileContent = await textractAsync(req.file.path, {
+          preserveLineBreaks: true,
+        });
+      }
+      // For any other supported file types
+      else {
+        // Use textract as a fallback for other document types
+        fileContent = await textractAsync(req.file.path, {
+          preserveLineBreaks: true,
+        });
+      }
+    } catch (extractionError) {
+      console.log(`Error extracting ${documentType} content:`, extractionError);
+      // Continue with an empty content if extraction fails
+      fileContent = `Unable to extract content from ${req.file.originalname}`;
+    }
+
+    // If we have content, analyze the document using OpenAI
+    let analysisResult = { score: 0, feedback: [] };
+
+    if (fileContent && fileContent.length > 100) {
+      // Ensure we have enough content to analyze
+      try {
+        analysisResult = await analyzeFunction(fileContent);
+        console.log(`OpenAI ${documentType} Analysis Result:`, analysisResult);
+      } catch (aiError) {
+        console.log(`Error getting AI analysis for ${documentType}:`, aiError);
+        // Continue with default values if analysis fails
+      }
+    } else {
+      console.log(`Insufficient content for ${documentType} analysis`);
+    }
+
+    // Send response with file details and analysis
+    res.status(200).json({
+      success: true,
+      message: `${documentType} uploaded successfully`,
+      data: {
+        file: fileDetails,
+        fileUrl: `/api/documents/files/${req.file.filename}`,
+        analysis: {
+          score: analysisResult.score,
+          feedback: analysisResult.feedback,
+        },
+      },
+    });
+  } catch (error) {
+    console.error(`Error in ${documentType} upload:`, error);
+    res.status(500).json({
+      success: false,
+      message: `Error uploading ${documentType}`,
+      error: error.message,
+    });
+  }
+};
+
+// Handle SOP file upload
+exports.uploadSOP = async (req, res) => {
+  await processDocument(req, res, analyzeSOP, "Statement of Purpose");
+};
+
+// Handle PHS file upload
+exports.uploadPHS = async (req, res) => {
+  await processDocument(req, res, analyzePHS, "Personal History Statement");
+};
+
+// Get document file (original version)
+exports.getDocumentFile = (req, res) => {
+  try {
+    const filename = req.params.filename;
+    const filePath = path.join(__dirname, "../uploads", filename);
+
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({
+        success: false,
+        message: "File not found",
+      });
+    }
+
+    // Send the file
+    res.sendFile(filePath);
+  } catch (error) {
+    console.error("Error getting document file:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error retrieving file",
+      error: error.message,
+    });
+  }
+};
+
+// Upload edited document file
+exports.uploadEditedDocument = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "No file uploaded",
+      });
+    }
+
+    const {
+      documentId,
+      mentorName,
+      mentorId,
+      mentorTags = [],
+      editSummary = "",
+    } = req.body;
+
+    if (!documentId || !mentorId) {
+      return res.status(400).json({
+        success: false,
+        message: "Document ID and mentor ID are required",
+      });
+    }
+
+    const documentIndex = documents.findIndex((doc) => doc.id === documentId);
+
+    if (documentIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        message: "Document not found",
+      });
+    }
+
+    // Store the edited file details
+    const editedFileDetails = {
+      filename: req.file.filename,
+      originalname: req.file.originalname,
+      path: req.file.path,
+      size: req.file.size,
+      mimetype: req.file.mimetype,
+    };
+
+    // Create a record of this file edit
+    const editRecord = {
+      id: `file-edit-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      editType: "file",
+      fileDetails: editedFileDetails,
+      mentorName: mentorName || "Anonymous Mentor",
+      mentorId: mentorId,
+      mentorTags: mentorTags,
+      editSummary: editSummary,
+      timestamp: new Date().toISOString(),
+    };
+
+    // Add the edit record to edit history
+    if (!documents[documentIndex].editHistory) {
+      documents[documentIndex].editHistory = [];
+    }
+    documents[documentIndex].editHistory.push(editRecord);
+
+    // Update the document's edited file URL
+    documents[
+      documentIndex
+    ].editedFileUrl = `/api/documents/edited-files/${req.file.filename}`;
+    documents[documentIndex].updatedAt = new Date().toISOString();
+
+    res.status(200).json({
+      success: true,
+      message: "Edited document uploaded successfully",
+      data: {
+        documentId,
+        editedFileUrl: documents[documentIndex].editedFileUrl,
+        editRecord: editRecord,
+      },
+    });
+  } catch (error) {
+    console.error("Error uploading edited document:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to upload edited document",
+      error: error.message,
+    });
+  }
+};
+
+// Get edited document file
+exports.getEditedDocumentFile = (req, res) => {
+  try {
+    const filename = req.params.filename;
+    const filePath = path.join(__dirname, "../uploads/edited", filename);
+
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({
+        success: false,
+        message: "Edited file not found",
+      });
+    }
+
+    // Send the file
+    res.sendFile(filePath);
+  } catch (error) {
+    console.error("Error getting edited document file:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error retrieving edited file",
       error: error.message,
     });
   }

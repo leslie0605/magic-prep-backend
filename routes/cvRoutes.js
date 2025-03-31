@@ -16,15 +16,18 @@ const storage = multer.diskStorage({
 
 // File filter
 const fileFilter = (req, file, cb) => {
-  // Accept only pdf and docx files
+  // Accept pdf, doc, docx, and tex files
   if (
     file.mimetype === "application/pdf" ||
     file.mimetype ===
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    file.mimetype === "application/msword" ||
+    file.mimetype === "application/x-tex" ||
+    path.extname(file.originalname).toLowerCase() === ".tex"
   ) {
     cb(null, true);
   } else {
-    cb(new Error("Only PDF and DOCX files are allowed"), false);
+    cb(new Error("Only PDF, DOC, DOCX, and TEX files are allowed"), false);
   }
 };
 

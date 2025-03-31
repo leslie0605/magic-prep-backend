@@ -39,11 +39,18 @@ const storage = multer.diskStorage({
 
 // File filter for allowed types
 const fileFilter = (req, file, cb) => {
-  // Accept only PDF files for now
-  if (file.mimetype === "application/pdf") {
+  // Accept pdf, doc, docx, and tex files
+  if (
+    file.mimetype === "application/pdf" ||
+    file.mimetype ===
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    file.mimetype === "application/msword" ||
+    file.mimetype === "application/x-tex" ||
+    path.extname(file.originalname).toLowerCase() === ".tex"
+  ) {
     cb(null, true);
   } else {
-    cb(new Error("Only PDF files are allowed"), false);
+    cb(new Error("Only PDF, DOC, DOCX, and TEX files are allowed"), false);
   }
 };
 
@@ -102,7 +109,7 @@ app.get("/", (req, res) => {
 
 // Error handling middleware for multer and other errors
 app.use((err, req, res, next) => {
-  if (err.message === "Only PDF files are allowed") {
+  if (err.message === "Only PDF, DOC, DOCX, and TEX files are allowed") {
     return res.status(400).json({
       success: false,
       message: err.message,

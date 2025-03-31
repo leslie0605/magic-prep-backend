@@ -5,6 +5,7 @@ const axios = require("axios");
 const { promisify } = require("util");
 const pdf = require("pdf-parse");
 const readFile = promisify(fs.readFile);
+const { YoutubeTranscript } = require("youtube-transcript");
 
 // Initialize OpenAI with API key
 const openai = new OpenAI({
@@ -85,36 +86,102 @@ async function processPdfContent(pdfData) {
  */
 async function processYoutubeContent(youtubeUrl) {
   try {
-    // For demonstration purposes, we'll use a simplified approach
-    // In a production app, you would integrate with YouTube's API or a third-party service
-
     // Extract video ID from URL
     const videoId = extractYoutubeVideoId(youtubeUrl);
     if (!videoId) {
       throw new Error("Invalid YouTube URL");
     }
 
-    // For this example, we'll summarize the video using AI
-    // In a real app, you'd fetch the actual transcript
-    const prompt = `
-    Please summarize the main educational content from this YouTube video: ${youtubeUrl}.
-    Focus on extracting key concepts and information that would be useful for creating 
-    educational content. If you don't have information about this specific video,
-    generate plausible educational content based on the URL or video ID.
-    `;
+    try {
+      console.log(`Attempting to retrieve transcript for video ID: ${videoId}`);
 
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.7,
-      max_tokens: 1500,
-    });
+      // Use the static fetchTranscript method
+      const transcript = await YoutubeTranscript.fetchTranscript(videoId);
 
-    return response.choices[0].message.content;
+      if (transcript && transcript.length > 0) {
+        // Process transcript items into a continuous text
+        let fullTranscript = transcript
+          .map((item) => item.text)
+          .join(" ")
+          .replace(/\s+/g, " "); // Clean up extra whitespace
+
+        // Decode common HTML entities
+        fullTranscript = decodeHtmlEntities(fullTranscript);
+
+        console.log(
+          `Successfully retrieved transcript for YouTube video ID: ${videoId} (${fullTranscript.length} characters)`
+        );
+        return fullTranscript;
+      } else {
+        throw new Error("No transcript found for this video");
+      }
+    } catch (transcriptError) {
+      // Log detailed error information for debugging
+      console.warn(
+        `[YouTube Transcript Error] Video ID: ${videoId}, Error: ${transcriptError.message}`
+      );
+      console.warn(
+        `[YouTube Transcript Error] Error Stack: ${
+          transcriptError.stack?.substring(0, 200) || "No stack trace"
+        }`
+      );
+      console.warn("Falling back to AI summary...");
+
+      // Fallback to AI-generated content when transcript is unavailable
+      const prompt = `
+      Please summarize the main educational content from this YouTube video: ${youtubeUrl}.
+      Focus on extracting key concepts and information that would be useful for creating 
+      educational content. If you don't have information about this specific video,
+      generate plausible educational content based on the URL or video ID.
+      `;
+
+      try {
+        const response = await openai.chat.completions.create({
+          model: "gpt-4o",
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.7,
+          max_tokens: 1500,
+        });
+
+        const aiSummary = response.choices[0].message.content;
+        console.log(
+          `Generated AI summary for YouTube video ID: ${videoId} (${aiSummary.length} characters)`
+        );
+        return aiSummary;
+      } catch (aiError) {
+        console.error(
+          `[OpenAI Error] Failed to generate summary: ${aiError.message}`
+        );
+        throw new Error(
+          `Unable to process YouTube content: ${aiError.message}`
+        );
+      }
+    }
   } catch (error) {
-    console.error("Error processing YouTube content:", error);
+    console.error(`[YouTube Processing Error] ${error.message}`, {
+      url: youtubeUrl,
+    });
     throw new Error(`Failed to process YouTube content: ${error.message}`);
   }
+}
+
+/**
+ * Decode HTML entities in a string
+ * @param {string} text - Text with HTML entities
+ * @returns {string} - Decoded text
+ */
+function decodeHtmlEntities(text) {
+  return text
+    .replace(/&amp;#39;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;quot;/g, '"')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&apos;/g, "'")
+    .replace(/&quot;/g, '"');
 }
 
 /**

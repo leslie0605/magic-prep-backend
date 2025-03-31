@@ -2,6 +2,10 @@ const path = require("path");
 const fs = require("fs");
 const { analyzeCV } = require("../utils/openaiService"); // Import the OpenAI service
 const PDFParser = require("pdf-parse"); // Let's assume we have this library for PDF parsing
+const mammoth = require("mammoth");
+const textract = require("textract");
+const util = require("util");
+const textractAsync = util.promisify(textract.fromFileWithPath);
 
 // Handle CV file upload
 exports.uploadCV = async (req, res) => {
@@ -32,13 +36,37 @@ exports.uploadCV = async (req, res) => {
         const data = await PDFParser(dataBuffer);
         fileContent = data.text;
       }
-      // For DOCX files - in a real implementation, you'd use a library like mammoth
+      // For DOCX files
       else if (
         req.file.mimetype ===
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
       ) {
-        // Placeholder - in a real app, you'd use a library like mammoth to extract text
-        fileContent = `This is a placeholder for DOCX content from ${req.file.originalname}`;
+        const result = await mammoth.extractRawText({
+          path: req.file.path,
+        });
+        fileContent = result.value;
+      }
+      // For DOC files
+      else if (req.file.mimetype === "application/msword") {
+        fileContent = await textractAsync(req.file.path, {
+          preserveLineBreaks: true,
+        });
+      }
+      // For TEX files
+      else if (
+        req.file.mimetype === "application/x-tex" ||
+        path.extname(req.file.originalname).toLowerCase() === ".tex"
+      ) {
+        fileContent = await textractAsync(req.file.path, {
+          preserveLineBreaks: true,
+        });
+      }
+      // For any other supported file types
+      else {
+        // Use textract as a fallback for other document types
+        fileContent = await textractAsync(req.file.path, {
+          preserveLineBreaks: true,
+        });
       }
     } catch (extractionError) {
       console.log("Error extracting file content:", extractionError);
@@ -49,7 +77,7 @@ exports.uploadCV = async (req, res) => {
     // If we have content, analyze the CV using OpenAI
     let analysisResult = { score: 0, feedback: [] };
 
-    if (fileContent.length > 100) {
+    if (fileContent && fileContent.length > 100) {
       // Ensure we have enough content to analyze
       try {
         analysisResult = await analyzeCV(fileContent);
