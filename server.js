@@ -4,9 +4,17 @@ const quizRoutes = require("./routes/quizRoutes");
 const cvRoutes = require("./routes/cvRoutes");
 const documentRoutes = require("./routes/documentRoutes");
 const authRoutes = require("./routes/authRoutes");
+const universityRoutes = require("./routes/universityRoutes");
+const connectDB = require("./config/db");
 const path = require("path");
 const multer = require("multer");
 const fs = require("fs");
+require("dotenv").config();
+
+// Connect to MongoDB
+connectDB()
+  .then(() => console.log("Connected to MongoDB"))
+  .catch((err) => console.error("MongoDB connection error:", err));
 
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, "uploads");
@@ -85,6 +93,7 @@ app.use("/api/quizzes", quizRoutes);
 app.use("/api/cv", cvRoutes);
 app.use("/api/documents", documentRoutes);
 app.use("/api/auth", authRoutes);
+app.use("/api/universities", universityRoutes);
 
 // Basic route for server check
 app.get("/", (req, res) => {
